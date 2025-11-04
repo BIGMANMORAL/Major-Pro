@@ -9,8 +9,8 @@ app = Flask(__name__)
 # --- MODEL AND ENCODER LOADING ---
 # Load the trained model and the label encoders from the 'models' folder
 try:
-    model_path = os.path.join('models', 'lgbm_model.pkl')
-    encoders_path = os.path.join('models', 'label_encoders.pkl')
+    model_path = os.path.join('models', r'C:\Users\aruna\OneDrive\Desktop\Major-Pro\Notebooks\models\lgbm_model.pkl')
+    encoders_path = os.path.join('models', r'C:\Users\aruna\OneDrive\Desktop\Major-Pro\Notebooks\models\label_encoders.pkl')
     
     model = joblib.load(model_path)
     encoders = joblib.load(encoders_path)
