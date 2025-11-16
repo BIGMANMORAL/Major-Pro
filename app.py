@@ -4,150 +4,151 @@ import numpy as np
 import pandas as pd
 import os
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='.')
 
-# --- MODEL AND ENCODER LOADING ---
-# Load the trained model and the label encoders from the 'models' folder
+# --- MODEL & METADATA LOADING ---
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = os.path.join(BASE_DIR, "models")
+
+model_path = os.path.join(MODEL_DIR, "champion_model.joblib")
+cols_path = os.path.join(MODEL_DIR, "training_columns.joblib")
+
 try:
-    model_path = os.path.join('models', r'C:\Users\aruna\OneDrive\Desktop\Major-Pro\Notebooks\models\lgbm_model.pkl')
-    encoders_path = os.path.join('models', r'C:\Users\aruna\OneDrive\Desktop\Major-Pro\Notebooks\models\label_encoders.pkl')
-    
     model = joblib.load(model_path)
-    encoders = joblib.load(encoders_path)
-    print("Model and encoders loaded successfully!")
+    TRAINING_COLUMNS = joblib.load(cols_path)
+    print("✅ Model and training columns loaded successfully!")
+except Exception as e:
+    print(f"❌ Error loading model or training columns: {e}")
+    model = None
+    TRAINING_COLUMNS = None
 
-    # CORRECTED: Added 'age_bucket' to the list to match the 19 features the model was trained on.
-    TRAINING_COLUMNS = [
-        'team', 'position', 'height', 'age', 'appearance', 'goals', 'assists', 
-        'yellow cards', 'second yellow cards', 'red cards', 'goals conceded', 
-        'clean sheets', 'minutes played', 'days_injured', 'games_injured', 
-        'award', 'position_encoded', 'winger', 'age_bucket'
+
+# --- PREPROCESSING FUNCTION ---
+
+def preprocess_input(data: dict) -> pd.DataFrame:
+    """
+    Prepare a single player input (from the frontend) so it matches
+    the Random Forest training data structure (X_encoded).
+    """
+
+    # Create DataFrame from incoming JSON
+    df = pd.DataFrame([data])
+
+    # 1. Ensure numeric fields are numeric
+    numeric_cols = [
+        "age",
+        "height",
+        "appearance",
+        "minutes_played",
+        "award",
+        "goals",
+        "assists",
+        "yellow_cards",
+        "red_cards",
+        "goals_conceded",
+        "clean_sheets",
+        "days_injured",
+        # if your dataset had these, we'll fill them later if needed:
+        "second_yellow_cards",
+        "games_injured",
     ]
 
-
-except FileNotFoundError:
-    print("Error: Model or encoder file not found in the 'models' directory.")
-    model = None
-    encoders = None
-except Exception as e:
-    print(f"An error occurred while loading files: {e}")
-    model = None
-    encoders = None
-
-
-# --- DATA PREPROCESSING FUNCTION ---
-def preprocess_input(data):
-    """
-    Prepares the user input from the form for the model.
-    This function MUST replicate the preprocessing from your training script.
-    """
-    
-    # 1. Create a DataFrame from the input dictionary
-    df = pd.DataFrame([data])
-    
-    # 2. Convert data types from form to numeric
-    numeric_cols = {
-        'height': 0, 'age': 0, 'appearance': 0, 'goals': 0, 'assists': 0,
-        'yellow_cards': 0, 'red_cards': 0, 'goals_conceded': 0, 'clean_sheets': 0,
-        'minutes_played': 0, 'days_injured': 0, 'award': 0
-    }
-    for col, default in numeric_cols.items():
-        df[col] = pd.to_numeric(df.get(col, default))
-
-    # Rename columns to match training data
-    df.rename(columns={
-        'yellow_cards': 'yellow cards',
-        'red_cards': 'red cards',
-        'goals_conceded': 'goals conceded',
-        'clean_sheets': 'clean sheets',
-        'minutes_played': 'minutes played'
-    }, inplace=True)
-
-    # 3. Add placeholders for features not on the form
-    df['team'] = 'Unknown'
-    df['second yellow cards'] = 0
-    df['games_injured'] = 0 # Form provides days_injured, so we default games_injured to 0
-
-    # 4. --- Feature Engineering ---
-    # Replicate 'position_encoded' and 'winger' logic
-    position = df['position'].iloc[0]
-    if position == 'Goalkeeper':
-        df['position_encoded'] = 1
-        df['winger'] = 0
-    elif position == 'Defender':
-        df['position_encoded'] = 2
-        df['winger'] = 0
-    elif position == 'Midfield':
-        df['position_encoded'] = 3
-        df['winger'] = 0
-    elif position == 'Attack':
-        df['position_encoded'] = 4
-        df['winger'] = 1 # Assume an attacker can be a winger
-    else:
-        df['position_encoded'] = 0 # Default for unknown
-        df['winger'] = 0
-
-    # ADDED: Create the 'age_bucket' feature exactly as in the training notebook. This was the missing step.
-    df["age_bucket"] = pd.cut(df["age"], bins=[0, 20, 25, 30, 35, 100],
-                            labels=["<20", "20-25", "25-30", "30-35", "35+"], right=False)
-
-    # 5. --- Encoding ---
-    # Apply the loaded LabelEncoders for string-based categorical columns
-    for col, encoder in encoders.items():
-        # Check if the column exists in our dataframe before trying to encode it
+    for col in numeric_cols:
         if col in df.columns:
-            try:
-                # Ensure the column is of type string for the encoder
-                df[col] = encoder.transform(df[col].astype(str))
-            except ValueError:
-                print(f"Warning: Unseen label for column {col}: {df[col].iloc[0]}. Assigning -1.")
-                df[col] = -1 # Use -1 for unknown categories
-            
-    # 6. --- Feature Ordering ---
-    # Ensure the column order is IDENTICAL to the training data
-    df = df.reindex(columns=TRAINING_COLUMNS)
-    
-    print(f"Number of features being sent to model: {len(df.columns)}")
-    print("Processed DataFrame columns:", df.columns.tolist())
-    print("Data going into model:\n", df.head())
-    
-    return df
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+        else:
+            # Create missing ones with 0 for safety
+            df[col] = 0
+
+    # 2. Rename columns to match the original DataFrame columns before get_dummies
+    # (these names are what likely exist in cleaned_final_data.csv)
+    df.rename(
+        columns={
+            "yellow_cards": "yellow cards",
+            "red_cards": "red cards",
+            "goals_conceded": "goals conceded",
+            "clean_sheets": "clean sheets",
+            "minutes_played": "minutes played",
+            "second_yellow_cards": "second yellow cards",
+            "days_injured": "days_injured",  # keep same if that's the column name
+        },
+        inplace=True,
+    )
+
+    # 3. Add categorical columns expected by training
+    # Index.html doesn't ask for 'team', so we default to 'Unknown'
+    if "team" not in df.columns:
+        df["team"] = "Unknown"
+
+    # Ensure 'position' exists (it comes from the form dropdown)
+    if "position" not in df.columns:
+        raise ValueError("Missing 'position' in input data")
+
+    # 4. Apply one-hot encoding in the SAME way as training
+    # Training did: pd.get_dummies(X, columns=['team', 'position'])
+    categorical_cols = []
+    for c in ["team", "position"]:
+        if c in df.columns:
+            categorical_cols.append(c)
+
+    df_encoded = pd.get_dummies(df, columns=categorical_cols)
+
+    # 5. Align with TRAINING_COLUMNS:
+    #    - Add any missing training columns (fill with 0)
+    #    - Drop any extra columns not seen during training
+    for col in TRAINING_COLUMNS:
+        if col not in df_encoded.columns:
+            df_encoded[col] = 0
+
+    # Keep only columns the model was trained on, in the correct order
+    df_encoded = df_encoded[TRAINING_COLUMNS]
+
+    print("Processed feature columns:", df_encoded.columns.tolist())
+    print("Processed row:\n", df_encoded.head())
+
+    return df_encoded
 
 
-# --- FLASK ROUTES ---
-@app.route('/')
+# --- ROUTES ---
+
+@app.route("/")
 def home():
-    return render_template('index.html')
+    # index.html is already in the same folder; template_folder='.' handles it
+    return render_template("index.html")
 
-@app.route('/predict', methods=['POST'])
+
+@app.route("/predict", methods=["POST"])
 def predict():
-    if model is None or encoders is None:
-        return jsonify({'error': 'Model or encoders not loaded. Check server logs.'}), 500
+    if model is None or TRAINING_COLUMNS is None:
+        return (
+            jsonify(
+                {"error": "Model or training columns not loaded on the server."}
+            ),
+            500,
+        )
 
     try:
         data = request.get_json(force=True)
-        print(f"Received data: {data}")
+        print("🔹 Raw incoming data:", data)
 
-        processed_data = preprocess_input(data)
+        processed = preprocess_input(data)
 
-        # Make prediction
-        prediction_log = model.predict(processed_data)[0]
-        
-        # --- Inverse Transform ---
-        # The model predicts the log value, so we convert it back to the original scale
-        prediction_eur = np.expm1(prediction_log)
+        # RandomForest was trained directly on 'current_value' (no log transform)
+        prediction = model.predict(processed)[0]
 
-        # Ensure the value is not negative
-        if prediction_eur < 0:
-            prediction_eur = 0
+        # Sanity: no negative values
+        prediction = float(prediction)
+        if prediction < 0:
+            prediction = 0.0
 
-        return jsonify({'predicted_value': prediction_eur})
+        return jsonify({"predicted_value": prediction})
 
     except Exception as e:
-        # Provide a more specific error message back to the front-end if possible
-        print(f"An error occurred during prediction: {e}")
-        return jsonify({'error': f'An error occurred on the server: {e}'}), 500
+        print(f"❌ Error during prediction: {e}")
+        return jsonify({"error": f"Server error during prediction: {e}"}), 500
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
+    # In production use: app.run(host="0.0.0.0", port=8000)
     app.run(debug=True)
-
